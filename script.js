@@ -456,12 +456,12 @@ class RNG {
         this.stem = permute_dict(d, rng);
       }
 
-      ctrl(L, wilt, sway) {
+      ctrl(L, wilt, sway, dragOffsetX = 0, dragOffsetY = 0) {
         let cx = this.cx, y0 = this.y0;
         let P0 = [cx, y0 + 4.0];
         let P1 = [cx - 0.06 * L * (1 - wilt) + 0.02 * L * wilt, y0 - 0.33 * L];
         let P2 = [cx + 0.05 * L * (1 - wilt) + 0.08 * L * wilt + sway * 0.5, y0 - L * (0.74 + 0.30 * wilt)];
-        let P3 = [cx + sway + 0.32 * L * wilt, y0 - L * (1 - 0.15 * wilt)];
+        let P3 = [cx + sway + 0.32 * L * wilt + dragOffsetX, y0 - L * (1 - 0.15 * wilt) + dragOffsetY];
         return [P0, P1, P2, P3];
       }
 
@@ -634,7 +634,7 @@ class RNG {
         this.leaf = permute_dict(l, rng);
       }
 
-      render(t) {
+      render(t, dragOffsetX = 0, dragOffsetY = 0) {
         let H = this.H, W = this.W;
         let [stem, size, bloom, wilt, leaf] = state(t);
         let canvas = new Uint8Array(this.base); // copy base
@@ -643,7 +643,7 @@ class RNG {
 
         let L = this.Ls * stem;
         let sway = 0.012 * H * Math.sin(t * 0.9) * stem * (1 - 0.6 * wilt);
-        let P = this.ctrl(L, wilt, sway);
+        let P = this.ctrl(L, wilt, sway, dragOffsetX, dragOffsetY);
         let hx = P[3][0], hy = P[3][1];
 
         if (stem > 0.01) {
@@ -813,6 +813,20 @@ class RNG {
     canvas.width = dim;
     canvas.height = dim;
 
+    // Drag interaction state
+    let isDragging = false;
+    let dragOffsetX = 0;
+    let dragOffsetY = 0;
+    let targetDragX = 0;
+    let targetDragY = 0;
+    let dragSpring = 0.15;  // Spring stiffness for return
+    let dragDamping = 0.85; // Damping for spring-back animation
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let dragHeadX = 0;
+    let dragHeadY = 0;
+    const DRAG_RADIUS = 80; // Radius around flower head to start dragging
+
     try {
         const plant = new Plant(dim, dim);
         console.log("Plant created successfully, base size:", plant.base?.length, "type:", plant.base?.constructor?.name);
@@ -870,8 +884,22 @@ class RNG {
             if (clock < 0) clock = 0;
             if (!LOOP && clock > T_END) clock = T_END;
 
+            // Spring-back physics for drag offset
+            if (isDragging) {
+                // Smoothly follow the target while dragging
+                dragOffsetX += (targetDragX - dragOffsetX) * 0.3;
+                dragOffsetY += (targetDragY - dragOffsetY) * 0.3;
+            } else {
+                // Spring back to zero when not dragging
+                dragOffsetX *= dragDamping;
+                dragOffsetY *= dragDamping;
+                // Stop tiny oscillations
+                if (Math.abs(dragOffsetX) < 0.1) dragOffsetX = 0;
+                if (Math.abs(dragOffsetY) < 0.1) dragOffsetY = 0;
+            }
+
             try {
-                let imgDataArray = plant.render(clock);
+                let imgDataArray = plant.render(clock, dragOffsetX, dragOffsetY);
                 // Clip data to valid range
                 let clamped = new Uint8ClampedArray(imgDataArray.length);
                 for (let i = 0; i < imgDataArray.length; i++) {
@@ -913,6 +941,74 @@ class RNG {
             }
           }
         });
+
+        // --- Drag Interaction Event Handlers ---
+        function getCanvasPos(e) {
+            const rect = canvas.getBoundingClientRect();
+            if (e.touches && e.touches.length > 0) {
+                return { x: e.touches[0].clientX - rect.left, y: e.touches[0].clientY - rect.top };
+            }
+            return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        }
+
+        function checkDragStart(x, y) {
+            // Compute the current flower head position (using current clock time)
+            let [stem, size, bloom, wilt, leaf] = state(clock);
+            let L = plant.Ls * stem;
+            let sway = 0.012 * plant.H * Math.sin(clock * 0.9) * stem * (1 - 0.6 * wilt);
+            let P = plant.ctrl(L, wilt, sway);
+            let hx = P[3][0];
+            let hy = P[3][1];
+            let dx = x - hx;
+            let dy = y - hy;
+            return Math.hypot(dx, dy) < DRAG_RADIUS;
+        }
+
+        function onDragStart(e) {
+            e.preventDefault();
+            let pos = getCanvasPos(e);
+            if (checkDragStart(pos.x, pos.y)) {
+                isDragging = true;
+                dragStartX = pos.x;
+                dragStartY = pos.y;
+                // Store the head position at drag start
+                let [stem, size, bloom, wilt, leaf] = state(clock);
+                let L = plant.Ls * stem;
+                let sway = 0.012 * plant.H * Math.sin(clock * 0.9) * stem * (1 - 0.6 * wilt);
+                let P = plant.ctrl(L, wilt, sway);
+                dragHeadX = P[3][0];
+                dragHeadY = P[3][1];
+                targetDragX = 0;
+                targetDragY = 0;
+                dragOffsetX = 0;
+                dragOffsetY = 0;
+                canvas.style.cursor = 'grabbing';
+            }
+        }
+
+        function onDragMove(e) {
+            if (!isDragging) return;
+            e.preventDefault();
+            let pos = getCanvasPos(e);
+            // Calculate target offset based on mouse movement from drag start
+            targetDragX = pos.x - dragStartX;
+            targetDragY = pos.y - dragStartY;
+        }
+
+        function onDragEnd(e) {
+            if (!isDragging) return;
+            isDragging = false;
+            canvas.style.cursor = 'default';
+        }
+
+        canvas.addEventListener('mousedown', onDragStart);
+        window.addEventListener('mousemove', onDragMove);
+        window.addEventListener('mouseup', onDragEnd);
+        canvas.addEventListener('mouseleave', onDragEnd);
+
+        canvas.addEventListener('touchstart', onDragStart, { passive: false });
+        window.addEventListener('touchmove', onDragMove, { passive: false });
+        window.addEventListener('touchend', onDragEnd);
 
         // Start animation loop
         updatePauseBtn();
