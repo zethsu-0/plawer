@@ -50,7 +50,7 @@ class RNG {
 
     // --- Math & Helper Functions ---
     const SEED = 5;
-    const TIME_SCALE = 1.0;
+    const TIME_SCALE = 3.0;
     const TICK_MS = 16; // ~60fps smooth
     const WIN_FRAC = 0.92;
     const LOOP = false;
